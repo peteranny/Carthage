@@ -50,6 +50,23 @@ private func parseSwiftVersionCommand(output: String?) -> String? {
 	return "\(first) (\(second))"
 }
 
+private func parseSemanticSwiftVersion(version: String) -> Result<SemanticVersion, ScannableError> {
+	guard
+		let regex = try? NSRegularExpression(pattern: "([^\\s]+) .*\\((.[^\\)]+)\\)", options: []),
+		let match = regex.firstMatch(in: version, options: [], range: NSRange(version.startIndex..., in: version))
+		else
+	{
+		return .failure(ScannableError(message: "Unknown version: \(String(describing: version))"))
+	}
+	
+	guard match.numberOfRanges == 3 else {
+		return .failure(ScannableError(message: "Unknown version: \(version)"))
+	}
+	
+	let first = version[Range(match.range(at: 1), in: version)!]
+	return SemanticVersion.from(Scanner(string: "\(first)"))
+}
+
 /// Determines the Swift version of a framework at a given `URL`.
 internal func frameworkSwiftVersionIfIsSwiftFramework(_ frameworkURL: URL) -> SignalProducer<String?, SwiftVersionError> {
 	guard isSwiftFramework(frameworkURL) else {
@@ -130,14 +147,41 @@ internal func isSwiftFramework(_ frameworkURL: URL) -> Bool {
 	return frameworkURL.swiftmoduleURL() != nil
 }
 
+extension SwiftVersion {
+	static func parse(fullVersion: String) -> Result<SwiftVersion, ScannableError> {
+		return parseSemanticSwiftVersion(version: fullVersion)
+			.map { SwiftVersion(version: fullVersion, semver: $0) }
+	}
+}
+
+
 /// Emits the framework URL if it matches the local Swift version and errors if not.
 internal func checkSwiftFrameworkCompatibility(_ frameworkURL: URL, usingToolchain toolchain: String?) -> SignalProducer<URL, SwiftVersionError> {
-	return SignalProducer.combineLatest(swiftVersion(usingToolchain: toolchain), frameworkSwiftVersion(frameworkURL))
-		.attemptMap { localSwiftVersion, frameworkSwiftVersion in
-			return localSwiftVersion == frameworkSwiftVersion || isModuleStableAPI(localSwiftVersion, frameworkSwiftVersion, frameworkURL)
-				? .success(frameworkURL)
-				: .failure(.incompatibleFrameworkSwiftVersions(local: localSwiftVersion, framework: frameworkSwiftVersion))
-		}
+	
+	let localVersion = swiftVersion(usingToolchain: toolchain)
+		.flatMap(.concat) { version -> SignalProducer<SwiftVersion, SwiftVersionError> in
+			let versionResult = SwiftVersion.parse(fullVersion: version)
+				.mapError { _ -> SwiftVersionError in .unknownLocalSwiftVersion }
+			return SignalProducer(result: versionResult)
+	}
+	let frameworkVersion = frameworkSwiftVersion(frameworkURL)
+		.flatMap(.concat) { version -> SignalProducer<SwiftVersion, SwiftVersionError> in
+			let versionResult = SwiftVersion.parse(fullVersion: version)
+				.mapError { versionError -> SwiftVersionError in
+					.unknownFrameworkSwiftVersion(message: versionError.description) }
+			return SignalProducer(result: versionResult)
+	}
+	
+	return SignalProducer.combineLatest(localVersion, frameworkVersion)
+		.attemptMap { (versions) -> Result<URL, SwiftVersionError> in
+			let (localSwiftVersion, frameworkSwiftVersion) = versions
+			
+			if frameworkSwiftVersion.compatible(localSwiftVersion) {
+				return .success(frameworkURL)
+			} else {
+				return .failure(.incompatibleFrameworkSwiftVersions(local: localSwiftVersion.version, framework: frameworkSwiftVersion.version))
+			}
+	}
 }
 
 /// Determines whether a local swift version and a framework combination are considered module stable

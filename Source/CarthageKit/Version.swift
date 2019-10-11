@@ -500,6 +500,23 @@ extension VersionSpecifier: CustomStringConvertible {
 	}
 }
 
+internal struct SwiftVersion: Equatable {
+	internal let version: String
+	internal let semver: SemanticVersion
+
+	private static let moduleStableSwiftVersion = SemanticVersion(5, 1, 0)
+
+	internal var isModuleStableVersion: Bool {
+		return self.semver >= SwiftVersion.moduleStableSwiftVersion
+	}
+}
+
+extension SwiftVersion {
+	func compatible(_ otherVersion: SwiftVersion) -> Bool {
+		return self == otherVersion || (isModuleStableVersion && otherVersion.isModuleStableVersion)
+	}
+}
+
 private func intersection(atLeast: SemanticVersion, compatibleWith: SemanticVersion) -> VersionSpecifier? {
 	if atLeast.major > compatibleWith.major {
 		return nil

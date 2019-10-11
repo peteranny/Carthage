@@ -201,7 +201,12 @@ public struct VersionFile: Codable {
 				} else {
 					return frameworkSwiftVersion(frameworkURL)
 						.map { swiftVersion -> Bool in
-							return swiftVersion == localSwiftVersion
+							guard let swiftVersion = SwiftVersion.parse(fullVersion: swiftVersion).value,
+								let localSwiftVersion = SwiftVersion.parse(fullVersion: localSwiftVersion).value else {
+									return false
+							}
+
+							return localSwiftVersion.compatible(swiftVersion)
 						}
 						.flatMapError { _ in SignalProducer<Bool, CarthageError>(value: false) }
 				}
